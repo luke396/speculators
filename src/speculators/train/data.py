@@ -16,12 +16,12 @@ from datasets import load_from_disk
 from safetensors.torch import load_file
 from torch.utils.data import Dataset
 
+from speculators.data_generation import sglang_client, vllm_client
 from speculators.data_generation.offline import check_hidden_states
 from speculators.data_generation.vllm_client import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_REQUEST_TIMEOUT,
     ClientItem,
-    generate_hidden_states,
     wait_for_lock,
 )
 from speculators.train.noise_transforms import TransformTensors
@@ -233,6 +233,7 @@ class ArrowDataset(BaseDataset):
         datapath: str | PathLike,
         hidden_states_path: str | PathLike | None = None,
         vllm_endpoint: str = "http://localhost:8000/v1",
+        sglang_endpoint: str | None = None,
         on_missing: Literal["generate", "skip", "warn", "raise"] = "generate",
         on_generate: Literal["cache", "delete"] = "delete",
         split_ratio: float = 1.0,
@@ -271,6 +272,7 @@ class ArrowDataset(BaseDataset):
             else Path(hidden_states_path)
         )
         self.vllm_endpoint = vllm_endpoint
+        self.sglang_endpoint = sglang_endpoint
         self.on_missing = on_missing
         self.on_generate = on_generate
         if self.on_generate == "cache":
@@ -309,14 +311,24 @@ class ArrowDataset(BaseDataset):
         return list(self.data.with_format(None)["seq_len"])
 
     def _maybe_generate_hs(self, index: int) -> dict[str, torch.Tensor] | None:
-        if not self.client:
-            self._setup_client()
-
         dataset_item = self.data[index]
         client_item = build_client_item(dataset_item)
 
+        if self.sglang_endpoint:
+            generated_hs = sglang_client.generate_hidden_states(
+                self.sglang_endpoint,
+                client_item,
+                timeout=self.request_timeout,
+                max_retries=self.max_retries,
+            )
+            generated_hs["hidden_states"] = generated_hs["hidden_states"].unsqueeze(1)
+            return generated_hs
+
+        if not self.client:
+            self._setup_client()
+
         try:
-            hs_filepath = generate_hidden_states(
+            hs_filepath = vllm_client.generate_hidden_states(
                 self.client,  # type:ignore[arg-type]
                 self.model,  # type:ignore[arg-type]
                 client_item,

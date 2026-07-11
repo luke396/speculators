@@ -621,6 +621,7 @@ def main(args: argparse.Namespace):  # noqa: C901
         legacy_data=args.legacy_data,
         hidden_states_path=args.hidden_states_path,
         vllm_endpoint=args.vllm_endpoint,
+        sglang_endpoint=args.sglang_endpoint,
         on_missing=args.on_missing,
         on_generate=args.on_generate,
         verifier_name_or_path=args.verifier_name_or_path,
@@ -826,6 +827,10 @@ def parse_args():
             " to a location that is accessible from the training instance. i.e."
             " on the same node, or a shared network drive. (Default: 'http://localhost:8000/v1')"
         ),
+    )
+    parser.add_argument(
+        "--sglang-endpoint",
+        help="SGLang endpoint for MTP inline prompt hidden states.",
     )
     parser.add_argument(
         "--on-missing",
@@ -1267,6 +1272,9 @@ def parse_args():
     )
 
     args = parser.parse_args()
+
+    if args.sglang_endpoint and args.speculator_type != "mtp":
+        parser.error("--sglang-endpoint is only supported with --speculator-type mtp")
 
     is_eagle3 = args.speculator_type == "eagle3"
     if args.draft_arch is None:

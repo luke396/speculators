@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+import pytest
 import torch
 from datasets import Dataset
 
@@ -492,3 +493,79 @@ def test_arrow_dataset_on_generate_cache_creates_hidden_states_dir(tmp_path: Pat
     )
 
     assert arrow_ds.hidden_states_path.is_dir()
+
+
+def _sglang_arrow_dataset(tmp_path: Path, monkeypatch, generate):
+    ds = Dataset.from_dict(
+        {
+            "input_ids": [[10, 11, 12]],
+            "loss_mask": [[0, 1, 1]],
+            "seq_len": [3],
+        }
+    )
+    ds.set_format(type="torch")
+
+    monkeypatch.setattr("speculators.train.data.load_from_disk", lambda _path: ds)
+    monkeypatch.setattr(
+        "speculators.train.data.openai.OpenAI",
+        lambda **_kwargs: pytest.fail("SGLang must not construct an OpenAI client"),
+    )
+    monkeypatch.setattr(
+        "speculators.train.data.sglang_client.generate_hidden_states",
+        generate,
+    )
+
+    return ArrowDataset(
+        max_len=128,
+        datapath=str(tmp_path / "data"),
+        sglang_endpoint="http://sglang.example/v1",
+        on_missing="generate",
+        model="target-model",
+        hidden_states_dtype=torch.float32,
+    )
+
+
+def test_arrow_dataset_generates_missing_hidden_states_with_sglang(
+    tmp_path: Path, monkeypatch
+):
+    calls = []
+
+    def fake_generate(endpoint, client_item, *, timeout, max_retries):
+        calls.append((endpoint, client_item, timeout, max_retries))
+        return {
+            "token_ids": torch.tensor(client_item["input_ids"], dtype=torch.long),
+            "hidden_states": torch.tensor([[0.1, 0.2], [1.1, 1.2], [2.1, 2.2]]),
+        }
+
+    arrow_ds = _sglang_arrow_dataset(tmp_path, monkeypatch, fake_generate)
+
+    item = arrow_ds[0]
+
+    assert item is not None
+    assert torch.equal(item["input_ids"], torch.tensor([10, 11, 12]))
+    assert item["hidden_states"].shape == (3, 0)
+    assert torch.allclose(
+        item["verifier_last_hidden_states"],
+        torch.tensor([[0.1, 0.2], [1.1, 1.2], [2.1, 2.2]]),
+    )
+    assert calls == [
+        (
+            "http://sglang.example/v1",
+            {"input_ids": [10, 11, 12]},
+            120,
+            3,
+        )
+    ]
+    assert not list(tmp_path.rglob("*.safetensors"))
+
+
+def test_arrow_dataset_propagates_sglang_generation_failure(
+    tmp_path: Path, monkeypatch
+):
+    def fail_generation(*args, **kwargs):
+        raise OSError("SGLang endpoint unavailable")
+
+    arrow_ds = _sglang_arrow_dataset(tmp_path, monkeypatch, fail_generation)
+
+    with pytest.raises(OSError, match="SGLang endpoint unavailable"):
+        arrow_ds[0]

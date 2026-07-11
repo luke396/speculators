@@ -1,5 +1,7 @@
 """Tests for CLI arguments."""
 
+import pytest
+
 from scripts.train import parse_args
 from speculators.models.dflash.core import DFlashDraftModel
 from speculators.models.dspark.core import DSparkDraftModel
@@ -28,6 +30,37 @@ def test_dflash_default_uses_kl(monkeypatch):
     assert "kl_div" in val_kw["loss_config"]
     assert train_kw["gamma"] == 4.0
     assert val_kw["gamma"] == 4.0
+
+
+def test_sglang_endpoint_is_available_for_inline_hidden_states(monkeypatch):
+    args = _parse(
+        monkeypatch,
+        [
+            "--speculator-type",
+            "mtp",
+            "--sglang-endpoint",
+            "http://sglang.example/v1",
+        ],
+    )
+
+    assert args.sglang_endpoint == "http://sglang.example/v1"
+
+
+def test_sglang_endpoint_is_rejected_for_non_mtp(monkeypatch, capsys):
+    with pytest.raises(SystemExit):
+        _parse(
+            monkeypatch,
+            [
+                "--speculator-type",
+                "eagle3",
+                "--sglang-endpoint",
+                "http://sglang.example/v1",
+            ],
+        )
+
+    assert "--sglang-endpoint is only supported with --speculator-type mtp" in (
+        capsys.readouterr().err
+    )
 
 
 def test_dflash_explicit_ce(monkeypatch):
